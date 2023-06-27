@@ -15,6 +15,7 @@
 # This model implementation is heavily inspired by https://github.com/haofanwang/ControlNet-for-Diffusers/
 
 import inspect
+import time
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -1130,6 +1131,7 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             ]
 
         # 1. Check inputs. Raise error if not correct
+        start_time = time.time()
         self.check_inputs(
             prompt,
             control_image,
@@ -1143,8 +1145,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             control_guidance_start,
             control_guidance_end,
         )
+        print(f"1. Check inputs cost time: {time.time()-start_time}")
 
         # 2. Define call parameters
+        start_time = time.time()
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
         elif prompt is not None and isinstance(prompt, list):
@@ -1167,8 +1171,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             else controlnet.nets[0].config.global_pool_conditions
         )
         guess_mode = guess_mode or global_pool_conditions
+        print(f"2. Define call parameters cost time: {time.time()-start_time}")
 
         # 3. Encode input prompt
+        start_time = time.time()
         text_encoder_lora_scale = (
             cross_attention_kwargs.get("scale", None) if cross_attention_kwargs is not None else None
         )
@@ -1182,8 +1188,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             negative_prompt_embeds=negative_prompt_embeds,
             lora_scale=text_encoder_lora_scale,
         )
+        print(f"3. Encode input prompt cost time: {time.time()-start_time}")
 
         # 4. Prepare image
+        start_time = time.time()
         if isinstance(controlnet, ControlNetModel):
             control_image = self.prepare_control_image(
                 image=control_image,
@@ -1217,13 +1225,17 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             control_image = control_images
         else:
             assert False
+        print(f"4. Prepare image cost time: {time.time()-start_time}")
 
-        # 4. Preprocess mask and image - resizes image and mask w.r.t height and width
+        # 4.1 Preprocess mask and image - resizes image and mask w.r.t height and width
+        start_time = time.time()
         mask, masked_image, init_image = prepare_mask_and_masked_image(
             image, mask_image, height, width, return_image=True
         )
+        print(f"4.1 Preprocess mask and image cost time: {time.time()-start_time}")
 
         # 5. Prepare timesteps
+        start_time = time.time()
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps, num_inference_steps = self.get_timesteps(
             num_inference_steps=num_inference_steps, strength=strength, device=device
@@ -1232,8 +1244,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
         latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
         # create a boolean to check if the strength is set to 1. if so then initialise the latents with pure noise
         is_strength_max = strength == 1.0
+        print(f"5. Prepare timesteps cost time: {time.time()-start_time}")
 
         # 6. Prepare latent variables
+        start_time = time.time()
         num_channels_latents = self.vae.config.latent_channels
         num_channels_unet = self.unet.config.in_channels
         return_image_latents = num_channels_unet == 4
@@ -1257,8 +1271,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             latents, noise, image_latents = latents_outputs
         else:
             latents, noise = latents_outputs
+        print(f"6. Prepare latent variables cost time: {time.time()-start_time}")
 
-        # 7. Prepare mask latent variables
+        # 6.1 Prepare mask latent variables
+        start_time = time.time()
         mask, masked_image_latents = self.prepare_mask_latents(
             mask,
             masked_image,
@@ -1270,11 +1286,15 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
             generator,
             do_classifier_free_guidance,
         )
+        print(f"6.1 Prepare mask latent variables cost time: {time.time()-start_time}")
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
+        start_time = time.time()
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+        print(f"7. Prepare extra step kwargs cost time: {time.time()-start_time}")
 
         # 7.1 Create tensor stating which controlnets to keep
+        start_time = time.time()
         controlnet_keep = []
         for i in range(num_inference_steps):
             keeps = [
@@ -1282,8 +1302,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
                 for s, e in zip(control_guidance_start, control_guidance_end)
             ]
             controlnet_keep.append(keeps[0] if len(keeps) == 1 else keeps)
+        print(f"7.1 Create tensor stating which controlnets to keep cost time: {time.time()-start_time}")
 
         # 8. Denoising loop
+        start_time = time.time()
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -1362,13 +1384,16 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
+        print(f"8. Denoising loop cost time: {time.time()-start_time}")
 
         # If we do sequential model offloading, let's offload unet and controlnet
         # manually for max memory savings
+        start_time = time.time()
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
             self.unet.to("cpu")
             self.controlnet.to("cpu")
             torch.cuda.empty_cache()
+        print(f"9. offload unet and controlnet cost time: {time.time()-start_time}")
 
         if not output_type == "latent":
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
@@ -1385,8 +1410,10 @@ class StableDiffusionControlNetInpaintPipeline(DiffusionPipeline, TextualInversi
         image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
 
         # Offload last model to CPU
+        start_time = time.time()
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
             self.final_offload_hook.offload()
+        print(f"10. Offload last model to CPU cost time: {time.time()-start_time}")
 
         if not return_dict:
             return (image, has_nsfw_concept)
